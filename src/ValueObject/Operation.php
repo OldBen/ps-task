@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace App\ValueObject;
 
+use DateTimeImmutable;
 use App\Enum\Currency;
 use App\Enum\OperationType; 
 use App\Enum\UserType;
