@@ -10,16 +10,15 @@ use App\Enum\OperationType;
 use App\Enum\Currency;
 use App\ValueObject\Operation;
 use League\Csv\Reader;
+use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Input\InputArgument;
 
-
+#[AsCommand(name: 'calculate:commission-fee')]
 class CalculateCommisionFeeCommand extends Command
 {
-    protected static $defaultName = 'calculate:commission-fee';
-
     private $exchangeDataProvider;
 
     public function __construct(ExchangeDataProvider $exchangeDataProvider)
@@ -67,21 +66,25 @@ class CalculateCommisionFeeCommand extends Command
             return Command::FAILURE;
         }
 
-        $commissionFees = [];
+        $commissionFee = 0;
         $operationLimits = [];
         
         // process the input data
         foreach ($operations as $key => $op) {
+            $amount = $op->getOperationAmount();
+            if ($op->getOperationCurrency() !== Currency::JPY) {
+                $amount *= 100;
+            }
             if ($op->getOperationType() === OperationType::DEPOSIT) {
-                $commissionFees[$key] = $op->getOperationAmount() * 0.0003;
+                $commissionFee = $amount * 0.0003;
             } else {
                 if ($op->getUserType() === UserType::BUSINESS) {
-                    $commissionFees[$key] = $op->getOperationAmount() * 0.005;
+                    $commissionFee = $amount * 0.005;
                 } else {
                     $weekNo = $op->getOperationDate()->format('o-W');
                     if (empty($operationLimits[$op->getUserId()][$weekNo])) {
                         $operationLimits[$op->getUserId()][$weekNo] = [
-                            'amount' => 1000,
+                            'amount' => 100000,
                             'opsRemaining' => 3,
                         ];
                     }
@@ -90,9 +93,8 @@ class CalculateCommisionFeeCommand extends Command
                         if ($op->getOperationCurrency() !== Currency::EUR) {
                             try {
                                 $exchangeRates = $this->exchangeDataProvider->fetchExchangeRates($op->getOperationDate()->format('Y-m-d'), [$op->getOperationCurrency()->value]);
-                                $output->writeln(print_r($exchangeRates, true));
-                                $rate = $exchangeRates['rates'][$op->getOperationCurrency()->value];
-                                $amount = $op->getOperationAmount() / $rate;
+                                $rate = $exchangeRates['rates'][$op->getOperationCurrency()->value] /  ($op->getOperationCurrency() === Currency::JPY ? 100 : 1);
+                                $amount = $amount / $rate;
                                 //delay required to avoid hitting the API rate limit
                                 usleep(1000000);
                             } catch (\Exception $e) {
@@ -100,24 +102,28 @@ class CalculateCommisionFeeCommand extends Command
                                 return Command::FAILURE;
                             }
                         } else {
-                            $amount = $op->getOperationAmount();
                             $rate = 1;
                         }
                         if ($amount > $operationLimits[$op->getUserId()][$weekNo]['amount']) {
-                            $commissionFees[$key] = ($amount - $operationLimits[$op->getUserId()][$weekNo]['amount']) * $rate * 0.003;
+                            $commissionFee = ($amount - $operationLimits[$op->getUserId()][$weekNo]['amount']) * $rate * 0.003;
                             $operationLimits[$op->getUserId()][$weekNo]['amount'] = 0;
                         } else {
-                            $commissionFees[$key] = 0;
-                            $operationLimits[$op->getUserId()][$weekNo]['amount'] -= $op->getOperationAmount();
+                            $commissionFee = 0;
+                            $operationLimits[$op->getUserId()][$weekNo]['amount'] -= $amount;
                         }
                     } else {
-                        $commissionFees[$key] = $op->getOperationAmount() * 0.003;
+                        $commissionFee = $amount * 0.003;
                     }
                 }
             }
+            $commissionFee = ceil($commissionFee);
+            if ($op->getOperationCurrency() !== Currency::JPY) {
+                $output->write(number_format($commissionFee / 100, 2, '.', '') . PHP_EOL);
+            } else {
+                $output->write(number_format($commissionFee, 0, '.', '') . PHP_EOL);
+            }
         }
 
-        $output->writeln(print_r($commissionFees, true));
         return Command::SUCCESS;
     }
 }
